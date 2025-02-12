@@ -1,11 +1,11 @@
 [project]
-name = "specio"
+name = "spectral-util"
 dynamic = ["version"]
 description = "Imaging Spectrometer Utilities"
 readme = "README.md"
 requires-python = ">=3.9"
 license = {file = "LICENSE"}
-keywords = ["spectral", "specio"]
+keywords = ["spectral"]
 authors = [
   {name = "Philip G. Brodrick", email = "philip.brodrick@jpl.nasa.gov"},
 ]
@@ -40,11 +40,11 @@ test = [
 repository = "http://github.com/emit-sds/SpectralUtil"
 
 [project.scripts]
-specio = "specio.__main__:cli"
+specio = "spectral_util.__main__:cli"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
-path = "specio/__init__.py"
+path = "spectral_util/__init__.py"

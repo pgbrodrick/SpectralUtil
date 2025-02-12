@@ -2,7 +2,7 @@
 
 import click
 import numpy as np
-from specio.io import load_data, write_cog
+from spectral_util.io import load_data, write_cog
 
 # Define common arguments
 def common_arguments(f):

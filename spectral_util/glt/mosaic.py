@@ -4,7 +4,7 @@ from scipy.spatial import KDTree
 from scipy.signal import convolve2d
 
 import time
-from specio import io as spec_io
+from spectral_util import io as spec_io
 from osgeo import osr
 import pyproj
 import logging

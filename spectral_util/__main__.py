@@ -37,10 +37,10 @@ class LazyCLI(click.Group):
     cls=LazyCLI,
     no_args_is_help=True,
     lazy_subcommands={
-        "glt": "specio.glt:cli",
-        "ndvi": "specio.utils.spectral_util:ndvi",
-        "nbr": "specio.utils.spectral_util:nbr",
-        "rgb": "specio.utils.spectral_util:rgb",
+        "glt": "spectral_util.glt:cli",
+        "ndvi": "spectral_util.utils.spectral_util:ndvi",
+        "nbr": "spectral_util.utils.spectral_util:nbr",
+        "rgb": "spectral_util.utils.spectral_util:rgb",
         # "ndwi": "specio.utils.spectral_util:ndwi"
     },
 )
