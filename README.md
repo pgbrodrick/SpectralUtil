@@ -42,7 +42,38 @@ Will return:
 (1280, 1234, 284)
 ```
 
-load_data supports options for orthoing nc files that are not natively orthod (e.g. radiance .nc files) during read, and lazy loading (still only partially supported).  All CLI options used below (and more) have supporint api function calls.
+`load_data` supports orthoing nc files that are not natively orthod (e.g. radiance `.nc` files) during read, and now supports three loading modes:
+
+```python
+from spectral_util.spec_io import load_data
+
+# Default: eager numpy array, best for CLI compatibility and full-scene workflows
+meta, data = load_data('AV320250809t182459_000_L1B_RDN_4842d6a3_RDN.nc', lazy=False)
+
+# Explicit lazy proxy: metadata is immediate, data is read when indexed
+meta, data = load_data('AV320250809t182459_000_L1B_RDN_4842d6a3_RDN.nc', lazy=True)
+print(type(data))     # LazyArray
+print(data.shape)     # no full read
+subset = data[100:300, 100:300, :]   # computes only this region, returns ndarray
+
+# Auto mode: enables the lazy proxy only for large reflectance/radiance NetCDF files
+meta, data = load_data('AV320250809t182459_000_L1B_RDN_4842d6a3_RDN.nc', lazy='auto')
+```
+
+Loading mode guidance:
+
+- `lazy=False`: always returns a NumPy array. Use for CLI-like behavior, plotting, and full-scene processing.
+- `lazy=True`: returns a `LazyArray` proxy for supported NetCDF products. Use when you want deferred I/O and mostly access subsets or ROIs.
+- `lazy='auto'`: conservative heuristic that only enables the proxy for large NetCDF reflectance/radiance products where deferred access is likely to help.
+
+Important behavior notes:
+
+- `data.shape`, `data.dtype`, and `data.ndim` do not trigger a full read in lazy mode.
+- `data[y0:y1, x0:x1, :]` computes only the requested slice and returns a NumPy array.
+- `np.asarray(data)` or `data.compute()` materializes the full array.
+- The CLI still behaves eagerly by default.
+
+All CLI options used below (and more) have supporting API function calls.
 
 ## Running the CLI
 

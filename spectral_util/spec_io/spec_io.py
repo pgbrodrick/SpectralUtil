@@ -5,6 +5,16 @@ import os
 import numpy as np
 import logging
 
+try:
+    import dask.array as da
+except ImportError:
+    da = None
+
+try:
+    import xarray as xr
+except ImportError:
+    xr = None
+
 numpy_to_gdal = {
     np.dtype(np.float64): 7,
     np.dtype(np.float32): 6,
@@ -14,6 +24,158 @@ numpy_to_gdal = {
     np.dtype(np.uint16): 2,
     np.dtype(np.uint8): 1,
 }
+
+AUTO_LAZY_MIN_SIZE_BYTES = 1024 * 1024 * 1024
+
+
+def _require_lazy_netcdf_dependencies():
+    if xr is None or da is None:
+        raise ImportError(
+            "Lazy NetCDF loading requires xarray and dask. "
+            "Install with `pip install xarray dask` or add them to your pixi environment."
+        )
+
+
+def _open_netcdf_dask_array(input_file, variable, group=None, move_band_axis=False):
+    _require_lazy_netcdf_dependencies()
+    xds = xr.open_dataset(
+        input_file,
+        group=group,
+        chunks='auto',
+        decode_cf=False,
+        mask_and_scale=False,
+    )
+    arr = xds[variable].data
+    if move_band_axis and arr.ndim == 3:
+        arr = da.moveaxis(arr, 0, -1)
+    return arr
+
+
+def _resolve_lazy_mode(input_file, lazy, load_loc=False, mask_type=None):
+    if isinstance(lazy, bool):
+        return lazy
+
+    if not isinstance(lazy, str):
+        raise TypeError("lazy must be a bool or 'auto'")
+
+    if lazy.lower() != 'auto':
+        raise ValueError("lazy must be True, False, or 'auto'")
+
+    input_filename = os.path.basename(input_file).lower()
+
+    # Auto mode is intentionally conservative: only enable the proxy for
+    # large NetCDF reflectance/radiance products where ROI access can avoid
+    # reading the whole cube.
+    if not input_filename.endswith('.nc'):
+        return False
+
+    if load_loc or mask_type is not None:
+        return False
+
+    if any(tag in input_filename for tag in ('obs', 'loc', 'mask', 'bandmask')):
+        return False
+
+    if not any(tag in input_filename for tag in ('rfl', 'rdn', 'reflectance', 'radiance')):
+        return False
+
+    try:
+        return os.path.getsize(input_file) >= AUTO_LAZY_MIN_SIZE_BYTES
+    except OSError:
+        return False
+
+
+def _materialize_array(arr, nodata_value=None):
+    """Return a concrete numpy array with consistent behavior across lazy/eager reads."""
+    if hasattr(arr, 'compute'):
+        arr = arr.compute()
+
+    if np.ma.isMaskedArray(arr):
+        fill_value = nodata_value if nodata_value is not None else np.nan
+        arr = arr.filled(fill_value)
+
+    return np.asarray(arr)
+
+
+class LazyArray:
+    """
+    A lazy proxy wrapping a dask-backed array.
+
+    Metadata (shape, dtype, ndim) is available immediately without any file I/O.
+    Data is only read and decoded at the moment it is actually needed:
+
+        data[100:300, 100:300, :]  ->  computes only that region, returns ndarray
+        np.asarray(data)           ->  computes the full scene, returns ndarray
+        data.compute()             ->  explicit full materialisation to ndarray
+
+    Common ndarray reduction methods (mean, min, max, sum) are computed lazily
+    on the dask graph and return a scalar without reading unused data.
+    """
+
+    def __init__(self, dask_array):
+        _require_lazy_netcdf_dependencies()
+        self._dask = dask_array
+
+    # ── metadata – no I/O ────────────────────────────────────────────────────
+
+    @property
+    def shape(self):
+        return self._dask.shape
+
+    @property
+    def ndim(self):
+        return self._dask.ndim
+
+    @property
+    def dtype(self):
+        return self._dask.dtype
+
+    @property
+    def size(self):
+        return self._dask.size
+
+    def __len__(self):
+        return self.shape[0]
+
+    def __repr__(self):
+        return (
+            f"LazyArray(shape={self.shape}, dtype={self.dtype}, "
+            f"chunks={self._dask.chunks})"
+        )
+
+    # ── sliced access – computes only the selected region ────────────────────
+
+    def __getitem__(self, idx):
+        result = self._dask[idx]
+        if hasattr(result, "compute"):
+            return np.asarray(result.compute())
+        return np.asarray(result)
+
+    # ── full materialisation ──────────────────────────────────────────────────
+
+    def compute(self):
+        """Materialise the full array to a numpy ndarray."""
+        return np.asarray(self._dask.compute())
+
+    def __array__(self, dtype=None):
+        """Called by np.asarray(), np.array(), and NumPy ufuncs."""
+        arr = self.compute()
+        if dtype is not None:
+            arr = arr.astype(dtype)
+        return arr
+
+    # ── lazy reductions – return scalars without full load ────────────────────
+
+    def mean(self, axis=None, **kwargs):
+        return self._dask.mean(axis=axis, **kwargs).compute()
+
+    def min(self, axis=None, **kwargs):
+        return self._dask.min(axis=axis, **kwargs).compute()
+
+    def max(self, axis=None, **kwargs):
+        return self._dask.max(axis=axis, **kwargs).compute()
+
+    def sum(self, axis=None, **kwargs):
+        return self._dask.sum(axis=axis, **kwargs).compute()
 
 class GenericGeoMetadata:
     def __init__(self, band_names, geotransform=None, projection=None, glt=None, pre_orthod=False, nodata_value=None, loc=None):
@@ -93,13 +255,17 @@ class SpectralMetadata:
             return np.where(np.logical_and(self.wl >= wl - buffer, self.wl <= wl + buffer))
 
 
-def load_data(input_file, lazy=True, load_glt=False, load_loc=False, mask_type=None, return_loc_from_l1b_rad_nc=False):
+def load_data(input_file, lazy=False, load_glt=False, load_loc=False, mask_type=None, return_loc_from_l1b_rad_nc=False):
     """
     Loads a file and extracts the spectral metadata and data.
 
     Args:
         input_file (str): Path to the input file.
-        lazy (bool, optional): If True, loads the data lazily. Defaults to True.
+                lazy (bool or str, optional):
+                        - False: return eagerly loaded numpy arrays
+                        - True: return LazyArray proxies for supported NetCDF products
+                        - 'auto': enable LazyArray only for large NetCDF reflectance/radiance products
+                    Defaults to False.
         load_glt (bool, optional): If True, loads the glt for orthoing. Defaults to False.
         return_loc_from_l1b_rad
 
@@ -109,10 +275,12 @@ def load_data(input_file, lazy=True, load_glt=False, load_loc=False, mask_type=N
     Returns:
         tuple: A tuple containing:
             - Metadata: An object containing the appropriate metadata
-            - numpy.ndarray or netCDF4.Variable: The data, either as a lazy-loaded variable or a fully loaded numpy array.
+            - numpy.ndarray or LazyArray: The data, either fully loaded or lazily proxied.
     """
     if not os.path.exists(input_file):
         raise FileNotFoundError(f'{input_file} not found.')
+
+    lazy = _resolve_lazy_mode(input_file, lazy, load_loc=load_loc, mask_type=mask_type)
 
     input_filename = os.path.basename(input_file)
     if input_filename.endswith(('.hdr', '.dat', '.img')) or '.' not in input_filename:
@@ -373,9 +541,9 @@ def open_emit_rfl(input_file, lazy=True, load_glt=False):
     nodata_value = float(ds['reflectance']._FillValue)
 
     if lazy:
-        rdn = ds['reflectance']
+        rdn = LazyArray(_open_netcdf_dask_array(input_file, 'reflectance'))
     else:
-        rdn = np.array(ds['reflectance'][:])
+        rdn = _materialize_array(ds['reflectance'][:], nodata_value=nodata_value)
     
     glt = None
     if load_glt:
@@ -408,9 +576,9 @@ def open_emit_rdn(input_file, lazy=True, load_glt=False):
     nodata_value = float(ds['radiance']._FillValue)
 
     if lazy:
-        rdn = np.array(ds['radiance'][:])
+        rdn = LazyArray(_open_netcdf_dask_array(input_file, 'radiance'))
     else:
-        rdn = np.array(ds['radiance'][:])
+        rdn = _materialize_array(ds['radiance'][:], nodata_value=nodata_value)
     
     glt = None
     if load_glt:
@@ -565,10 +733,10 @@ def open_emit_obs_nc(input_file, lazy=True, load_glt=False, load_loc=False):
     if load_loc:
         loc = np.stack([ds['location']['lon'][:],ds['location']['lat'][:]],axis=-1)
 
-    # Don't have a good solution for lazy here, temporarily ignoring...
     if lazy:
-        logging.warning("Lazy loading not supported for observation data.")
-    obs = ds['obs'][...]
+        obs = LazyArray(_open_netcdf_dask_array(input_file, 'obs'))
+    else:
+        obs = _materialize_array(ds['obs'][...], nodata_value=nodata_value)
     
     meta = GenericGeoMetadata(obs_names, trans, proj, glt=glt, pre_orthod=False, nodata_value=nodata_value, loc=loc)
 
@@ -595,11 +763,9 @@ def open_airborne_rfl(input_file, lazy=True):
     nodata_value = float(ds['reflectance']['reflectance']._FillValue)
 
     if lazy:
-        # This is too bad....we're forced into inconsistent handling between AV3 and EMIT
-        # need to consider some clever solutions.  In the meantime, this works, but is expensive
-        rfl = np.transpose(ds['reflectance']['reflectance'], (1,2,0))
+        rfl = LazyArray(_open_netcdf_dask_array(input_file, 'reflectance', group='reflectance', move_band_axis=True))
     else:
-        rfl = np.transpose(ds['reflectance']['reflectance'][:], (1,2,0))
+        rfl = _materialize_array(np.transpose(ds['reflectance']['reflectance'][:], (1,2,0)), nodata_value=nodata_value)
     
     meta = SpectralMetadata(wl, fwhm, trans, proj, glt=None, pre_orthod=True, nodata_value=nodata_value)
 
@@ -626,11 +792,9 @@ def open_airborne_rdn(input_file, lazy=True):
     nodata_value = float(ds['radiance']['radiance']._FillValue)
 
     if lazy:
-        # This is too bad....we're forced into inconsistent handling between AV3 and EMIT
-        # need to consider some clever solutions.  In the meantime, this works, but is expensive
-        rdn = np.transpose(ds['radiance']['radiance'], (1,2,0))
+        rdn = LazyArray(_open_netcdf_dask_array(input_file, 'radiance', group='radiance', move_band_axis=True))
     else:
-        rdn = np.transpose(ds['radiance']['radiance'][:], (1,2,0))
+        rdn = _materialize_array(np.transpose(ds['radiance']['radiance'][:], (1,2,0)), nodata_value=nodata_value)
     
     meta = SpectralMetadata(wl, fwhm, trans, proj, glt=None, pre_orthod=True, nodata_value=nodata_value)
 
@@ -667,10 +831,21 @@ def open_airborne_obs(input_file, lazy=True, load_glt=False, load_loc=False):
     if load_loc:
         loc = np.stack([ds['lon'][:],ds['lat'][:]],axis=-1)
 
-    # Don't have a good solution for lazy here, temporarily ignoring...
     if lazy:
-        logging.warning("Lazy loading not supported for observation data.")
-    obs = np.stack([ds['observation_parameters'][on] for on in obs_names], axis=-1)
+        _require_lazy_netcdf_dependencies()
+        xds_obs = xr.open_dataset(
+            input_file,
+            group='observation_parameters',
+            chunks='auto',
+            decode_cf=False,
+            mask_and_scale=False,
+        )
+        obs = LazyArray(da.stack([xds_obs[on].data for on in obs_names], axis=-1))
+    else:
+        obs = _materialize_array(
+            np.stack([ds['observation_parameters'][on][:] for on in obs_names], axis=-1),
+            nodata_value=nodata_value
+        )
     
     meta = GenericGeoMetadata(obs_names, trans, proj, glt=glt, pre_orthod=False, nodata_value=nodata_value, loc=loc)
 

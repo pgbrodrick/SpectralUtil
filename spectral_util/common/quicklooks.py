@@ -63,7 +63,7 @@ def ndvi(input_file, output_file, ortho, red_wl, nir_wl, red_width, nir_width):
         nir_width (int): NIR band width [nm]; 0 = single wavelength.
     """
     click.echo(f"Running NDVI Calculation on {input_file}")
-    meta, rfl = load_data(input_file, lazy=True, load_glt=ortho)
+    meta, rfl = load_data(input_file, lazy='auto', load_glt=ortho)
     ndvi = calc_index(rfl, meta, red_wl, nir_wl, red_width, nir_width)
     ndvi = ndvi.reshape((ndvi.shape[0], ndvi.shape[1], 1))
     write_cog(output_file, ndvi, meta, ortho=ortho)
@@ -90,7 +90,7 @@ def nbr(input_file, output_file, ortho, nir_wl, swir_wl, nir_width, swir_width):
     """
 
     click.echo(f"Running NBR Calculation on {input_file}")
-    meta, rfl = load_data(input_file, lazy=True, load_glt=ortho)
+    meta, rfl = load_data(input_file, lazy='auto', load_glt=ortho)
     nbr = calc_index(rfl, meta, nir_wl, swir_wl, nir_width, swir_width)
     nbr = nbr.reshape((nbr.shape[0], nbr.shape[1], 1))
     write_cog(output_file, nbr, meta, ortho=ortho, nodata_value=-9999)
@@ -164,7 +164,7 @@ def rgb(input_file, output_file, ortho, red_wl, green_wl, blue_wl, stretch, scal
         raise ValueError("Cannot set both stretch and scale")
 
     click.echo(f"Running RGB Calculation on {input_file}")
-    meta, rfl = load_data(input_file, lazy=True, load_glt=ortho)
+    meta, rfl = load_data(input_file, lazy='auto', load_glt=ortho)
     rgb = get_rgb(rfl, meta, red_wl, green_wl, blue_wl, stretch, scale)
 
     nodata_value = meta.nodata_value

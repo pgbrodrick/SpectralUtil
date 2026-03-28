@@ -333,7 +333,7 @@ def build_obs_nc(output_file, input_file_list, ignore_file_list, x_resolution, y
             logging.debug(f'{file} Ignored')
             continue
 
-        local_meta, obs = spec_io.load_data(file.strip(), lazy=True, load_glt=False, load_loc=True)
+        local_meta, obs = spec_io.load_data(file.strip(), lazy='auto', load_glt=False, load_loc=True)
         loc = np.stack(proj(local_meta.loc[...,0],local_meta.loc[...,1]),axis=-1)
 
         sub_glt, sub_glt_insert_idx = find_subgrid_locations(y_grid, x_grid, loc[...,1], loc[...,0], n_workers=n_cores, max_distance=max_distance)  
@@ -417,7 +417,7 @@ def apply_glt(glt_file, raw_files, output_file, nodata_value, bands, output_form
         if np.any(glt[...,2] == _file):
             valid_glt = glt[...,2] == _file
 
-            meta, dat = spec_io.load_data(file.strip(), lazy=True, load_glt=False)
+            meta, dat = spec_io.load_data(file.strip(), lazy='auto', load_glt=False)
             if bands is None or len(bands) == 0:
                 bands = np.arange(dat.shape[2])
             dat = dat[...,bands]
