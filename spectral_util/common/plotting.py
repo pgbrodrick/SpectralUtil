@@ -181,17 +181,28 @@ def pc_figure(input_file, start=0, stop=99, seed=13, n_points=10_000, show=True)
 @click.option('--seed', default=13, help='Random seed for MNF sampling')
 @click.option('--n_points', default=10_000, help='Number of points to use for MNF')
 @click.option('--diff_dim', default=1, help='Dimension along which to calculate noise differences (0 for rows, 1 for cols)')
-def plot_mnf(input_file, output_file, n_mnf, seed, n_points, diff_dim):
+@click.option('--min_wl', default=None, type=float, help='Minimum wavelength [nm] to include in MNF')
+@click.option('--max_wl', default=None, type=float, help='Maximum wavelength [nm] to include in MNF')
+def plot_mnf(input_file, output_file, n_mnf, seed, n_points, diff_dim, min_wl, max_wl):
     """
     Visualizes an image and consistent spectra.
     """
     # Click passes None if bands is not provided, handled in function
-    mnf_figure(input_file, n_mnf, seed=seed, n_points=n_points, show=output_file is None, diff_dim=diff_dim)
+    mnf_figure(
+        input_file,
+        n_mnf,
+        seed=seed,
+        n_points=n_points,
+        show=output_file is None,
+        diff_dim=diff_dim,
+        min_wl=min_wl,
+        max_wl=max_wl,
+    )
     if output_file:
         plt.savefig(output_file, bbox_inches='tight', dpi=300)
         click.echo(f"Plot saved to {output_file}")
 
-def mnf_figure(input_file, n_mnf=20, seed=13, n_points=10_000, show=True, diff_dim=1):
+def mnf_figure(input_file, n_mnf=20, seed=13, n_points=10_000, show=True, diff_dim=1, min_wl=None, max_wl=None):
     """
     Plots single band mnfs
 
@@ -202,11 +213,22 @@ def mnf_figure(input_file, n_mnf=20, seed=13, n_points=10_000, show=True, diff_d
         n_points (int): Number of points to use for MNF.
         show (bool): Whether to display the plot immediately.
         diff_dim (int): Dimension along which to calculate noise differences (0 for rows, 1 for cols).
+        min_wl (float or None): Minimum wavelength [nm] to include.
+        max_wl (float or None): Maximum wavelength [nm] to include.
     """
     np.random.seed(seed)
     # Load data
     meta, data = load_data(input_file)
-    mnf_out = calculate_mnf(data, n_mnf=n_mnf, seed=seed, n_points=n_points, diff_dim=diff_dim)
+    mnf_out = calculate_mnf(
+        data,
+        n_mnf=n_mnf,
+        seed=seed,
+        n_points=n_points,
+        diff_dim=diff_dim,
+        wavelengths=meta.wl,
+        min_wl=min_wl,
+        max_wl=max_wl,
+    )
     n_mnfs = mnf_out.shape[2]
     
     plt.figure(figsize=(10, 10))
@@ -223,7 +245,7 @@ def mnf_figure(input_file, n_mnf=20, seed=13, n_points=10_000, show=True, diff_d
         plt.show()
 
 
-def calculate_mnf(data, n_mnf=99, seed=13, n_points=10_000, diff_dim=1):
+def calculate_mnf(data, n_mnf=99, seed=13, n_points=10_000, diff_dim=1, wavelengths=None, min_wl=None, max_wl=None):
     """
     Calculates MNF components for a hyperspectral cube.
 
@@ -233,7 +255,32 @@ def calculate_mnf(data, n_mnf=99, seed=13, n_points=10_000, diff_dim=1):
         seed (int): Random seed for sampling.
         n_points (int): Number of pixels used to estimate covariance terms.
         diff_dim (int): Dimension for shift-difference noise estimate (0 rows, 1 cols).
+        wavelengths (ndarray or None): Wavelengths for each spectral band.
+        min_wl (float or None): Minimum wavelength [nm] to include.
+        max_wl (float or None): Maximum wavelength [nm] to include.
     """
+
+    if min_wl is not None and max_wl is not None and min_wl > max_wl:
+        raise ValueError("min_wl must be <= max_wl")
+
+    if min_wl is not None or max_wl is not None:
+        if wavelengths is None:
+            raise ValueError("wavelengths are required when min_wl or max_wl is provided")
+
+        wl = np.asarray(wavelengths)
+        if wl.shape[0] != data.shape[2]:
+            raise ValueError("wavelength length must match the number of spectral bands")
+
+        wl_mask = np.ones(wl.shape, dtype=bool)
+        if min_wl is not None:
+            wl_mask &= wl >= min_wl
+        if max_wl is not None:
+            wl_mask &= wl <= max_wl
+
+        if not np.any(wl_mask):
+            raise ValueError("No spectral bands remain after applying wavelength range")
+
+        data = data[..., wl_mask]
 
     np.random.seed(seed)
     perm_subset = np.random.permutation(data.shape[0] * data.shape[1])[:n_points]
