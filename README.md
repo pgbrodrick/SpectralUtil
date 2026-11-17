@@ -82,6 +82,20 @@ spectral_util download get-fid ./downloads AV3_L1B_RDN_2356 AV320250809t182459_0
 spectral_util download get-fid ./downloads AV3_L1B_RDN_2356 AV320250809t182459_000 --subfile RDN --version 1 --overwrite
 ```
 
+#### download emit-fid
+```bash
+# V002 L1B radiance and observation files of one EMIT acquisition. The URLs
+# follow from the acquisition ID; no search or earthaccess login is involved.
+spectral_util download emit-fid emit20240301t014122 ./downloads
+
+# Only the observation file, with credentials from a given netrc file
+spectral_util download emit-fid emit20240301t014122 ./downloads --files obs --netrc /path/to/.netrc
+```
+Credentials come only from a netrc file (`machine urs.earthdata.nasa.gov`; by
+default `~/.netrc`). It never prompts, so it is safe in batch jobs. Each file is
+downloaded to a temporary name, checked, and only then renamed into place, so a
+file under its final name is always complete. Any failure exits non-zero.
+
 Assume the downloaded file used in subsequent examples is:
 
 ```text
@@ -212,6 +226,13 @@ spectral_util reformat nc-to-envi ./downloads/AV320250809t182459_000_L1B_RDN_484
 
 # Overwrite existing output
 spectral_util reformat nc-to-envi ./downloads/AV320250809t182459_000_L1B_RDN_4842d6a3_RDN.nc output_envi --overwrite
+
+# EMIT: location (longitude, latitude, elevation) and the geometry lookup table
+spectral_util reformat nc-to-envi ./downloads/EMIT_L1B_OBS_002_20240301T014122.nc emit20240301t014122_loc --layer loc
+spectral_util reformat nc-to-envi ./downloads/EMIT_L1B_OBS_002_20240301T014122.nc emit20240301t014122_glt --layer glt
+
+# EMIT L2A mask file: choose the mask variable
+spectral_util reformat nc-to-envi ./downloads/EMIT_L2A_MASK_002_20240301T014122.nc mask --mask-type mask
 ```
 
 
